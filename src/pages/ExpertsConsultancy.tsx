@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { FarmIQNavbar } from "@/components/farmiq/FarmIQNavbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
@@ -28,10 +28,12 @@ import {
 import { Star, MessageCircle, Phone, Clock, Award, Users, Search, Filter, X, Send } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
-// --- Mock Data ---
+// --- Expert Interface (matches database schema) ---
 interface Expert {
     id: number;
-    name: string;
+    full_name: string; // from database
+    initial: string; // from database
+    name: string; // for UI compatibility
     experience: string;
     expertise: string[];
     rating: number;
@@ -39,70 +41,14 @@ interface Expert {
     bio: string;
     languages: string[];
     qualification: string;
+    isOnline: boolean;
 }
-
-const EXPERTS_DATA: Expert[] = [
-    {
-        id: 1,
-        name: "Dr. Meera Joshi",
-        experience: "12+ years",
-        expertise: ["Crop Diseases", "Pest Management"],
-        rating: 4.9,
-        consultations: 1200,
-        bio: "Senior Agronomist specializing in integrated pest management and sustainable crop protection strategies.",
-        languages: ["English", "Hindi", "Marathi"],
-        qualification: "Ph.D. in Plant Pathology"
-    },
-    {
-        id: 2,
-        name: "Rahul Deshmukh",
-        experience: "8 years",
-        expertise: ["Soil Health", "Organic Farming"],
-        rating: 4.7,
-        consultations: 900,
-        bio: "Passionate organic farming consultant helping farmers transition to chemical-free agriculture.",
-        languages: ["Hindi", "Marathi"],
-        qualification: "M.Sc. in Soil Science"
-    },
-    {
-        id: 3,
-        name: "Dr. Kavita Sharma",
-        experience: "15 years",
-        expertise: ["Agri-Economics", "Market Trends"],
-        rating: 4.8,
-        consultations: 1500,
-        bio: "Expert in agricultural economics, market analysis, and supply chain management.",
-        languages: ["English", "Hindi", "Punjabi"],
-        qualification: "Ph.D. in Agricultural Economics"
-    },
-    {
-        id: 4,
-        name: "Vikram Patil",
-        experience: "6 years",
-        expertise: ["Irrigation Systems", "Water Management"],
-        rating: 4.6,
-        consultations: 700,
-        bio: "Irrigation engineer focused on efficient water usage and micro-irrigation systems.",
-        languages: ["Hindi", "Kannada", "Marathi"],
-        qualification: "B.Tech in Agricultural Engineering"
-    },
-    {
-        id: 5,
-        name: "Dr. Neha Kulkarni",
-        experience: "10+ years",
-        expertise: ["Plant Nutrition", "Fertilizers"],
-        rating: 4.9,
-        consultations: 1100,
-        bio: "Specialist in plant nutrition management and customized fertilizer scheduling.",
-        languages: ["English", "Hindi"],
-        qualification: "Ph.D. in Agronomy"
-    }
-];
 
 export default function ExpertsConsultancy() {
     const [theme, setTheme] = useState<'light' | 'dark'>('light');
     const [language, setLanguage] = useState<'English' | 'Hindi' | 'Punjabi'>('English');
-    const [experts, setExperts] = useState<Expert[]>(EXPERTS_DATA);
+    const [experts, setExperts] = useState<Expert[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
 
     // Filters
     const [expertiseFilter, setExpertiseFilter] = useState("All");
@@ -115,6 +61,47 @@ export default function ExpertsConsultancy() {
     const [isCallOpen, setIsCallOpen] = useState(false);
     const [chatMessage, setChatMessage] = useState("");
     const [chatHistory, setChatHistory] = useState<{ sender: 'user' | 'expert', text: string }[]>([]);
+
+    // Fetch experts from database on mount
+    useEffect(() => {
+        const fetchExperts = async () => {
+            try {
+                setIsLoading(true);
+                const response = await fetch('http://localhost:3001/api/experts', {
+                    credentials: 'include',
+                });
+
+                if (response.ok) {
+                    const dbExperts = await response.json();
+                    // Transform database format to UI format
+                    const transformedExperts: Expert[] = dbExperts.map((exp: any) => ({
+                        id: exp.id,
+                        full_name: exp.full_name,
+                        initial: exp.initial,
+                        name: exp.full_name,
+                        experience: `${exp.experience_years} years`,
+                        expertise: exp.expertise_tags.split(','),
+                        rating: exp.rating,
+                        consultations: exp.consultation_count,
+                        bio: `${exp.title} with extensive experience in ${exp.expertise_tags.split(',')[0]}.`,
+                        languages: ["English", "Hindi"],
+                        qualification: exp.title,
+                        isOnline: exp.is_online === 1
+                    }));
+                    setExperts(transformedExperts);
+                    console.log(`✓ Loaded ${transformedExperts.length} experts from database`);
+                } else {
+                    console.error('Failed to fetch experts');
+                }
+            } catch (error) {
+                console.error('Error fetching experts:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        fetchExperts();
+    }, []);
 
     const toggleTheme = () => {
         setTheme(prev => prev === 'light' ? 'dark' : 'light');
@@ -129,7 +116,7 @@ export default function ExpertsConsultancy() {
         return matchesExpertise && matchesSearch;
     });
 
-    const allExpertise = Array.from(new Set(EXPERTS_DATA.flatMap(e => e.expertise)));
+    const allExpertise = Array.from(new Set(experts.flatMap(e => e.expertise)));
 
     // Handlers
     const openDetails = (expert: Expert) => {
@@ -219,11 +206,13 @@ export default function ExpertsConsultancy() {
                                         <div className="flex gap-4">
                                             <div className="relative">
                                                 <div className="h-14 w-14 rounded-full bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center text-primary font-bold text-xl border-2 border-background shadow-sm ring-1 ring-border/50">
-                                                    {expert.name.charAt(0)}
+                                                    {expert.initial || expert.name.charAt(0)}
                                                 </div>
-                                                <div className="absolute -bottom-1 -right-1 bg-background rounded-full p-0.5 shadow-sm">
-                                                    <div className="bg-green-500 h-2.5 w-2.5 rounded-full border-2 border-background"></div>
-                                                </div>
+                                                {expert.isOnline && (
+                                                    <div className="absolute -bottom-1 -right-1 bg-background rounded-full p-0.5 shadow-sm">
+                                                        <div className="bg-green-500 h-2.5 w-2.5 rounded-full border-2 border-background"></div>
+                                                    </div>
+                                                )}
                                             </div>
                                             <div>
                                                 <CardTitle className="text-lg font-bold leading-tight">{expert.name}</CardTitle>

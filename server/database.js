@@ -40,8 +40,80 @@ const initDatabase = () => {
           return;
         }
         console.log('Index created successfully');
-        resolve();
       });
+
+      // Create expert_consultancy table
+      db.run(`
+        CREATE TABLE IF NOT EXISTS expert_consultancy (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          full_name TEXT NOT NULL,
+          initial TEXT NOT NULL,
+          rating REAL NOT NULL,
+          experience_years INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          expertise_tags TEXT NOT NULL,
+          consultation_count INTEGER NOT NULL,
+          is_online INTEGER NOT NULL DEFAULT 1,
+          chat_available INTEGER NOT NULL DEFAULT 1,
+          call_available INTEGER NOT NULL DEFAULT 1,
+          profile_image_url TEXT,
+          created_at TEXT DEFAULT (datetime('now'))
+        )
+      `, (err) => {
+        if (err) {
+          console.error('Error creating expert_consultancy table:', err);
+        } else {
+          console.log('Expert consultancy table created successfully');
+
+          // Seed expert_consultancy table
+          db.get('SELECT COUNT(*) as count FROM expert_consultancy', [], (err, row) => {
+            if (err) {
+              console.error('Error checking expert_consultancy:', err);
+              return;
+            }
+
+            if (row.count === 0) {
+              const experts = `
+                INSERT INTO expert_consultancy
+                (full_name, initial, rating, experience_years, title, expertise_tags, consultation_count, is_online, chat_available, call_available)
+                VALUES
+                ('Dr. Meera Joshi', 'M', 4.9, 15, 'Specialist', 'Crop Diseases,Pest Management,Organic Farming', 2150, 1, 1, 1),
+                ('Rahul Deshmukh', 'R', 4.7, 12, 'Specialist', 'Soil Health,Fertilizers,Plant Nutrition', 1850, 1, 1, 1),
+                ('Dr. Kavita Sharma', 'K', 4.8, 18, 'Specialist', 'Market Trends,Agri-Economics,Export', 2300, 1, 1, 1),
+                ('Vikram Patil', 'V', 4.6, 10, 'Specialist', 'Irrigation Systems,Water Management', 1450, 1, 1, 1),
+                ('Dr. Neha Kulkarni', 'N', 5.0, 22, 'Specialist', 'Crop Diseases,Plant Pathology,IPM', 2500, 1, 1, 1),
+                ('Amit Kumar Singh', 'A', 4.5, 8, 'Specialist', 'Organic Farming,Sustainable Agriculture', 980, 1, 1, 1),
+                ('Dr. Priya Reddy', 'P', 4.9, 16, 'Specialist', 'Soil Health,Micronutrients,Composting', 2100, 0, 1, 1),
+                ('Sanjay Verma', 'S', 4.4, 7, 'Specialist', 'Pest Management,Biological Control', 850, 1, 1, 1),
+                ('Dr. Anjali Mehta', 'A', 4.8, 20, 'Specialist', 'Market Trends,Price Forecasting,Policy', 2250, 1, 1, 1),
+                ('Rajesh Nair', 'R', 4.6, 11, 'Specialist', 'Irrigation,Drip Systems,Water Conservation', 1560, 1, 1, 1),
+                ('Dr. Sunita Rao', 'S', 4.9, 19, 'Specialist', 'Crop Diseases,Fungal Infections,Disease Management', 2180, 1, 1, 1),
+                ('Karan Thakur', 'K', 4.3, 6, 'Specialist', 'Fertilizers,NPK Management,Soil Testing', 720, 0, 1, 1),
+                ('Dr. Deepa Iyer', 'D', 4.7, 14, 'Specialist', 'Organic Farming,Certification,Marketing', 1780, 1, 1, 1),
+                ('Manish Gupta', 'M', 4.5, 9, 'Specialist', 'Pest Management,Insect Control,Nematodes', 1120, 1, 1, 1),
+                ('Dr. Rekha Pandey', 'R', 4.8, 17, 'Specialist', 'Soil Health,Soil Biology,Carbon Sequestration', 2050, 1, 1, 1),
+                ('Arun Chawla', 'A', 4.4, 8, 'Specialist', 'Market Trends,Commodity Trading,Risk Management', 950, 1, 1, 1),
+                ('Dr. Pooja Bhatt', 'P', 5.0, 25, 'Specialist', 'Crop Diseases,Viral Diseases,Resistance Breeding', 2450, 1, 1, 1),
+                ('Suresh Yadav', 'S', 4.6, 10, 'Specialist', 'Irrigation,Sprinkler Systems,Fertigation', 1380, 0, 1, 1),
+                ('Dr. Nisha Agarwal', 'N', 4.7, 13, 'Specialist', 'Fertilizers,Micronutrients,Foliar Application', 1650, 1, 1, 1),
+                ('Vikas Malhotra', 'V', 4.5, 9, 'Specialist', 'Pest Management,Rodent Control,Storage Pests', 1050, 1, 1, 1)
+              `;
+
+              db.run(experts, (err) => {
+                if (err) {
+                  console.error('Error seeding expert_consultancy:', err);
+                } else {
+                  console.log('✓ Seeded expert_consultancy with 20 experts');
+                }
+              });
+            } else {
+              console.log(`Expert consultancy already has ${row.count} entries, skipping seed data`);
+            }
+          });
+        }
+      });
+
+      resolve();
       // Create forum_posts table
       db.run(`
         CREATE TABLE IF NOT EXISTS forum_posts (

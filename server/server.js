@@ -861,6 +861,48 @@ app.get('/api/forum/posts/:post_id/replies', async (req, res) => {
   }
 });
 
+// ========== EXPERT CONSULTANCY ROUTES ==========
+
+// Get all experts with optional filtering
+app.get('/api/experts', async (req, res) => {
+  try {
+    const { search, expertise } = req.query;
+
+    let query = `SELECT * FROM expert_consultancy ORDER BY rating DESC, consultation_count DESC`;
+
+    db.all(query, [], (err, experts) => {
+      if (err) {
+        console.error('Get experts error:', err);
+        return res.status(500).json({ message: 'Database error', error: err.message });
+      }
+
+      let filteredExperts = experts || [];
+
+      // Apply search filter (name or expertise tags)
+      if (search && search.trim()) {
+        const searchLower = search.toLowerCase();
+        filteredExperts = filteredExperts.filter(expert =>
+          expert.full_name.toLowerCase().includes(searchLower) ||
+          expert.expertise_tags.toLowerCase().includes(searchLower)
+        );
+      }
+
+      // Apply expertise filter
+      if (expertise && expertise !== 'All Expertise') {
+        filteredExperts = filteredExperts.filter(expert =>
+          expert.expertise_tags.includes(expertise)
+        );
+      }
+
+      console.log(`✓ Returning ${filteredExperts.length} experts`);
+      res.json(filteredExperts);
+    });
+  } catch (error) {
+    console.error('Get experts error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 // Ask a new question with smart matching
 app.post('/api/forum/ask', requireAuth, async (req, res) => {
   try {
