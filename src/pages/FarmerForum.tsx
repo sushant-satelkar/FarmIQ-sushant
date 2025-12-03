@@ -124,23 +124,23 @@ export default function FarmerForum() {
 
             if (response.ok) {
                 const dbPosts = await response.json();
-                console.log('Received posts:', dbPosts);
+                console.log('Received posts from database:', dbPosts.length);
 
-                // Transform database posts to match UI Post interface
+                // Map database posts to UI format
                 const transformedPosts: Post[] = dbPosts.map((dbPost: any) => ({
                     id: dbPost.id,
                     name: dbPost.user_name || 'Anonymous Farmer',
                     question: dbPost.question,
-                    category: dbPost.category,
+                    category: dbPost.category || dbPost.community,
                     createdAt: dbPost.created_at,
                     upvotes: dbPost.upvotes || 0,
                     isUpvoted: false,
                     isBookmarked: false,
                     replies: dbPost.replies ? dbPost.replies.map((reply: any) => ({
                         id: reply.id,
-                        name: reply.replied_by,
-                        role: reply.replied_by && (reply.replied_by.includes('Expert') || reply.replied_by.includes('Advisor')) ? 'expert' :
-                            reply.replied_by && (reply.replied_by.includes('Officer') || reply.replied_by.includes('Scientist') || reply.replied_by.includes('Specialist')) ? 'verified' : 'user',
+                        name: reply.replied_by || 'Expert',
+                        role: (reply.replied_by && (reply.replied_by.includes('Expert') || reply.replied_by.includes('Advisor'))) ? 'expert' as const :
+                            (reply.replied_by && (reply.replied_by.includes('Officer') || reply.replied_by.includes('Scientist'))) ? 'verified' as const : 'user' as const,
                         reply: reply.reply_text,
                         createdAt: reply.created_at
                     })) : []
@@ -150,10 +150,12 @@ export default function FarmerForum() {
                 console.log(`✓ Loaded ${transformedPosts.length} posts from database`);
             } else {
                 const errorText = await response.text();
-                console.error(`Failed to fetch forum posts: ${response.status} - ${errorText}`);
+                console.error(`Failed to fetch: ${response.status} - ${errorText}`);
+                setPosts([]); // Set empty array on error, no mock data
             }
         } catch (error) {
             console.error("Error fetching forum posts:", error);
+            setPosts([]); // Set empty array on error, no mock data
         } finally {
             setIsLoading(false);
         }

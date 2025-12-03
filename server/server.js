@@ -2,7 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const cors = require('cors');
 const path = require('path');
-const { initDatabase, dbHelpers } = require('./database');
+const { initDatabase, dbHelpers, db } = require('./database');
 const authHelpers = require('./auth');
 
 const app = express();
@@ -778,13 +778,14 @@ app.use((err, req, res, next) => {
 
 // ========== FORUM ROUTES ==========
 
-// Get all forum posts (FIXED - removed problematic JOIN)
+// Get all forum posts 
 app.get('/api/forum/posts', async (req, res) => {
   try {
     const { category } = req.query;
 
     let query = `
-      SELECT id, user_id, category, question, created_at, upvotes, reply_count
+      SELECT id, user_id, category, community, question, extracted_keywords, 
+             status, created_at, upvotes, reply_count
       FROM forum_posts
     `;
 
@@ -796,67 +797,51 @@ app.get('/api/forum/posts', async (req, res) => {
 
     query += ` ORDER BY created_at DESC`;
 
-    console.log('Executing query:', query);
-
     db.all(query, params, (err, posts) => {
       if (err) {
         console.error('Get forum posts error:', err);
-        return res.status(500).json({ message: 'Internal server error', error: err.message });
+        return res.status(500).json({ message: 'Database error', error: err.message });
       }
 
       if (!posts || posts.length === 0) {
-        console.log('No posts found in database');
+        console.log('No posts found');
         return res.json([]);
       }
 
-      console.log(`Found ${posts.length} posts in database`);
+      console.log(`Found ${posts.length} posts`);
 
       // Get all replies
       db.all(`SELECT id, post_id, reply_text, replied_by, created_at, upvotes FROM forum_replies ORDER BY created_at ASC`, [], (err, replies) => {
         if (err) {
-          console.error('Get forum replies error:', err);
-          return res.status(500).json({ message: 'Internal server error', error: err.message });
+          console.error('Get replies error:', err);
+          return res.status(500).json({ message: 'Database error', error: err.message });
         }
 
-        console.log(`Found ${replies ? replies.length : 0} replies in database`);
+        console.log(`Found ${replies ? replies.length : 0} replies`);
 
-        // Transform data
-        const transformedPosts = posts.map(post => ({
-          id: post.id,
-          user_id: post.user_id,
-          user_name: 'Anonymous Farmer',
-          category: post.category,
-          question: post.question,
-          created_at: post.created_at,
-          upvotes: post.upvotes || 0,
-          reply_count: post.reply_count || 0,
-          replies: replies ? replies.filter(r => r.post_id === post.id).map(reply => ({
-            id: reply.id,
-            post_id: reply.post_id,
-            reply_text: reply.reply_text,
-            replied_by: reply.replied_by || 'Expert',
-            created_at: reply.created_at,
-            upvotes: reply.upvotes || 0
-          })) : []
+        // Attach replies to posts
+        const postsWithReplies = posts.map(post => ({
+          ...post,
+          replies: replies ? replies.filter(r => r.post_id === post.id) : []
         }));
 
-        console.log(`✓ Returning ${transformedPosts.length} posts with ${replies ? replies.length : 0} total replies`);
-        res.json(transformedPosts);
+        console.log(`✓ Returning ${postsWithReplies.length} posts with replies`);
+        res.json(postsWithReplies);
       });
     });
   } catch (error) {
     console.error('Get forum posts error:', error);
-    res.status(500).json({ message: 'Internal server error', error: error.message });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 // Get replies for a specific post
-app.get('/api/forum/posts/:post_id/replies', requireAuth, async (req, res) => {
+app.get('/api/forum/posts/:post_id/replies', async (req, res) => {
   try {
     const { post_id } = req.params;
 
     db.all(
-      `SELECT id, reply_text, replied_by, upvotes, created_at 
+      `SELECT id, post_id, reply_text, replied_by, upvotes, created_at 
        FROM forum_replies 
        WHERE post_id = ? 
        ORDER BY created_at ASC`,
@@ -866,6 +851,7 @@ app.get('/api/forum/posts/:post_id/replies', requireAuth, async (req, res) => {
           console.error('Get forum replies error:', err);
           return res.status(500).json({ message: 'Internal server error' });
         }
+        console.log(`✓ Returning ${replies ? replies.length : 0} replies for post ${post_id}`);
         res.json(replies || []);
       }
     );
