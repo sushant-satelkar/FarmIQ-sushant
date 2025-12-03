@@ -286,37 +286,26 @@ app.get('/api/farmers', requireAuth, requireRole(['vendor']), async (req, res) =
   try {
     const farmers = await dbHelpers.getFarmers();
 
-    // Helper function to clean values safely
-    const cleanValue = (value, regex) => {
-      if (!value || value.trim() === '') return '-';
-      const cleaned = value.replace(regex, '').trim();
-      return cleaned || '-';
-    };
-
     // Sanitize data to remove garbage characters
     const sanitizedFarmers = farmers.map(farmer => {
       return {
         ...farmer,
-        // Keep: digits, ₹, hyphens (both types), slash, spaces, letters for kg/quintal
-        expected_price: cleanValue(
-          farmer.expected_price,
-          /[^\d₹\-–—\s\/a-zA-Z]/g
-        ),
-        // Keep: letters, commas, spaces
-        crops_grown: cleanValue(
-          farmer.crops_grown,
-          /[^a-zA-Z,\s]/g
-        ),
-        // Keep: digits, spaces, letters for kg/quintal
-        available_quantity: cleanValue(
-          farmer.available_quantity,
-          /[^\d\sa-zA-Z]/g
-        ),
-        // Keep: letters, commas, spaces
-        location: cleanValue(
-          farmer.location,
-          /[^a-zA-Z,\s]/g
-        )
+        // Clean expected_price: keep only numbers, ₹, hyphen, slash, kg, quintal
+        expected_price: farmer.expected_price
+          ? (farmer.expected_price.replace(/[^\d₹\-–\/kgquintal\s]/gi, '').trim() || '-')
+          : '-',
+        // Clean crops_grown: alphabets, commas, spaces only
+        crops_grown: farmer.crops_grown
+          ? (farmer.crops_grown.replace(/[^a-zA-Z,\s]/g, '').trim() || '-')
+          : '-',
+        // Clean available_quantity: digits, kg, quintal only
+        available_quantity: farmer.available_quantity
+          ? (farmer.available_quantity.replace(/[^\d\skgquintal]/gi, '').trim() || '-')
+          : '-',
+        // Clean location: letters, commas, spaces only
+        location: farmer.location
+          ? (farmer.location.replace(/[^a-zA-Z,\s]/g, '').trim() || '-')
+          : '-'
       };
     });
 
@@ -789,18 +778,177 @@ app.use((err, req, res, next) => {
 
 // ========== FORUM ROUTES ==========
 
-// Get all forum posts
-app.get('/api/forum', requireAuth, async (req, res) => {
+// Get all forum posts (FIXED - removed problematic JOIN)
+app.get('/api/forum/posts', async (req, res) => {
   try {
-    const posts = await dbHelpers.getForumPosts();
-    res.json(posts);
+    const { category } = req.query;
+
+    let query = `
+      SELECT id, user_id, category, question, created_at, upvotes, reply_count
+      FROM forum_posts
+    `;
+
+    const params = [];
+    if (category && category !== 'All') {
+      query += ` WHERE category = ?`;
+      params.push(category);
+    }
+
+    query += ` ORDER BY created_at DESC`;
+
+    console.log('Executing query:', query);
+
+    db.all(query, params, (err, posts) => {
+      if (err) {
+        console.error('Get forum posts error:', err);
+        return res.status(500).json({ message: 'Internal server error', error: err.message });
+      }
+
+      if (!posts || posts.length === 0) {
+        console.log('No posts found in database');
+        return res.json([]);
+      }
+
+      console.log(`Found ${posts.length} posts in database`);
+
+      // Get all replies
+      db.all(`SELECT id, post_id, reply_text, replied_by, created_at, upvotes FROM forum_replies ORDER BY created_at ASC`, [], (err, replies) => {
+        if (err) {
+          console.error('Get forum replies error:', err);
+          return res.status(500).json({ message: 'Internal server error', error: err.message });
+        }
+
+        console.log(`Found ${replies ? replies.length : 0} replies in database`);
+
+        // Transform data
+        const transformedPosts = posts.map(post => ({
+          id: post.id,
+          user_id: post.user_id,
+          user_name: 'Anonymous Farmer',
+          category: post.category,
+          question: post.question,
+          created_at: post.created_at,
+          upvotes: post.upvotes || 0,
+          reply_count: post.reply_count || 0,
+          replies: replies ? replies.filter(r => r.post_id === post.id).map(reply => ({
+            id: reply.id,
+            post_id: reply.post_id,
+            reply_text: reply.reply_text,
+            replied_by: reply.replied_by || 'Expert',
+            created_at: reply.created_at,
+            upvotes: reply.upvotes || 0
+          })) : []
+        }));
+
+        console.log(`✓ Returning ${transformedPosts.length} posts with ${replies ? replies.length : 0} total replies`);
+        res.json(transformedPosts);
+      });
+    });
   } catch (error) {
     console.error('Get forum posts error:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
+
+// Get replies for a specific post
+app.get('/api/forum/posts/:post_id/replies', requireAuth, async (req, res) => {
+  try {
+    const { post_id } = req.params;
+
+    db.all(
+      `SELECT id, reply_text, replied_by, upvotes, created_at 
+       FROM forum_replies 
+       WHERE post_id = ? 
+       ORDER BY created_at ASC`,
+      [post_id],
+      (err, replies) => {
+        if (err) {
+          console.error('Get forum replies error:', err);
+          return res.status(500).json({ message: 'Internal server error' });
+        }
+        res.json(replies || []);
+      }
+    );
+  } catch (error) {
+    console.error('Get forum replies error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-// Create forum post
+// Ask a new question with smart matching
+app.post('/api/forum/ask', requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { category, question } = req.body;
+
+    if (!category || !question) {
+      return res.status(400).json({ message: 'Category and question are required' });
+    }
+
+    // Extract keywords
+    const { extractKeywords } = require('./keywords');
+    const keywords = extractKeywords(question);
+
+    // Insert new question
+    const result = await dbHelpers.createForumPost(userId, category, question, category, keywords);
+
+    // Find best matching post for recommendation
+    db.all(
+      `SELECT fp.*, p.full_name as user_name
+       FROM forum_posts fp
+       LEFT JOIN profiles p ON fp.user_id = p.id
+       WHERE fp.id != ? AND fp.community = ?
+       ORDER BY fp.upvotes DESC, fp.created_at DESC
+       LIMIT 3`,
+      [result.id, category],
+      (err, matches) => {
+        if (err) {
+          console.error('Find matches error:', err);
+        }
+
+        // Get replies for matches
+        if (matches && matches.length > 0) {
+          const matchIds = matches.map(m => m.id);
+          db.all(
+            `SELECT * FROM forum_replies WHERE post_id IN (${matchIds.join(',')})`,
+            [],
+            (err, replies) => {
+              const recommended = matches.map(post => ({
+                ...post,
+                replies: replies ? replies.filter(r => r.post_id === post.id) : []
+              }));
+
+              res.status(201).json({
+                id: result.id,
+                message: 'Question posted successfully',
+                keywords,
+                recommended: recommended[0] || null
+              });
+            }
+          );
+        } else {
+          res.status(201).json({
+            id: result.id,
+            message: 'Question posted successfully',
+            keywords,
+            recommended: null
+          });
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Create forum question error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Old endpoint for backwards compatibility
+app.get('/api/forum', requireAuth, async (req, res) => {
+  // Redirect to new endpoint
+  res.redirect('/api/forum/posts');
+});
+
+// Create forum post (legacy endpoint) - NOW WITH AUTO-ANSWER
 app.post('/api/forum', requireAuth, async (req, res) => {
   try {
     const userId = req.session.userId;
@@ -810,13 +958,183 @@ app.post('/api/forum', requireAuth, async (req, res) => {
       return res.status(400).json({ message: 'Category and question are required' });
     }
 
-    const result = await dbHelpers.createForumPost(userId, category, question);
-    res.status(201).json({ id: result.id, message: 'Post created successfully' });
+    // Extract keywords for matching
+    const { extractKeywords } = require('./keywords');
+    const keywords = extractKeywords(question);
+
+    // Insert new question with status 'Answered' and reply_count = 1 (will add auto-reply)
+    db.run(
+      `INSERT INTO forum_posts 
+       (user_id, category, community, question, extracted_keywords, status, upvotes, reply_count, created_at)
+       VALUES (?, ?, ?, ?, ?, 'Answered', 0, 1, datetime('now'))`,
+      [userId, category, category, question, keywords],
+      function (err) {
+        if (err) {
+          console.error('Error inserting forum post:', err);
+          return res.status(500).json({ message: 'Failed to create post' });
+        }
+
+        const newPostId = this.lastID;
+        console.log(`✓ New question inserted: ID ${newPostId}`);
+
+        // Find similar posts for smart answer generation
+        db.all(
+          `SELECT id, question, extracted_keywords, community
+           FROM forum_posts 
+           WHERE id != ? AND community = ? AND status = 'Answered'
+           ORDER BY id DESC
+           LIMIT 10`,
+          [newPostId, category],
+          (err, similarPosts) => {
+            if (err) console.error('Error finding similar posts:', err);
+
+            // Generate answer based on similarity or use generic response
+            let expertAnswer = '';
+            let expertName = 'FarmIQ Expert Advisor';
+
+            // Calculate similarity scores
+            const questionKeywords = keywords.toLowerCase().split(',').map(k => k.trim());
+            let bestMatch = null;
+            let bestScore = 0;
+
+            if (similarPosts && similarPosts.length > 0) {
+              similarPosts.forEach(post => {
+                const postKeywords = (post.extracted_keywords || '').toLowerCase().split(',').map(k => k.trim());
+                let score = 0;
+
+                questionKeywords.forEach(qk => {
+                  postKeywords.forEach(pk => {
+                    if (qk === pk || qk.includes(pk) || pk.includes(qk)) {
+                      score++;
+                    }
+                  });
+                });
+
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestMatch = post;
+                }
+              });
+            }
+
+            // Generate context-aware answer
+            if (bestScore >= 2 && bestMatch) {
+              // Found good match - get its answer
+              db.get(
+                `SELECT reply_text, replied_by FROM forum_replies WHERE post_id = ? LIMIT 1`,
+                [bestMatch.id],
+                (err, matchReply) => {
+                  if (matchReply) {
+                    expertAnswer = `Based on similar questions: ${matchReply.reply_text}`;
+                    expertName = matchReply.replied_by;
+                  } else {
+                    expertAnswer = generateGenericAnswer(category, question);
+                  }
+                  insertReplyAndRespond();
+                }
+              );
+            } else {
+              // No good match - generate category-specific answer
+              expertAnswer = generateGenericAnswer(category, question);
+              insertReplyAndRespond();
+            }
+
+            function insertReplyAndRespond() {
+              // Insert auto-generated answer into forum_replies
+              db.run(
+                `INSERT INTO forum_replies
+                 (post_id, reply_text, replied_by, upvotes, created_at)
+                 VALUES (?, ?, ?, 0, datetime('now'))`,
+                [newPostId, expertAnswer, expertName],
+                function (replyErr) {
+                  if (replyErr) {
+                    console.error('Error inserting auto-reply:', replyErr);
+                  } else {
+                    console.log(`✓ Auto-reply generated for post ${newPostId}`);
+                  }
+
+                  // Fetch the complete new post with reply to return to frontend
+                  db.get(
+                    `SELECT fp.*, p.full_name as user_name
+                     FROM forum_posts fp
+                     LEFT JOIN profiles p ON fp.user_id = p.id
+                     WHERE fp.id = ?`,
+                    [newPostId],
+                    (err, newPost) => {
+                      if (err || !newPost) {
+                        return res.status(201).json({
+                          id: newPostId,
+                          message: 'Post created successfully'
+                        });
+                      }
+
+                      // Get the reply we just created
+                      db.get(
+                        `SELECT * FROM forum_replies WHERE post_id = ? ORDER BY created_at DESC LIMIT 1`,
+                        [newPostId],
+                        (err, newReply) => {
+                          // Return complete post with reply
+                          res.status(201).json({
+                            id: newPostId,
+                            message: 'Question posted and answered successfully',
+                            post: {
+                              id: newPost.id,
+                              user_name: newPost.user_name || 'You',
+                              category: newPost.community,
+                              community: newPost.community,
+                              question: newPost.question,
+                              keywords: newPost.extracted_keywords ? newPost.extracted_keywords.split(',') : [],
+                              status: newPost.status,
+                              upvotes: newPost.upvotes,
+                              reply_count: newPost.reply_count,
+                              created_at: newPost.created_at,
+                              replies: newReply ? [{
+                                id: newReply.id,
+                                reply_text: newReply.reply_text,
+                                replied_by: newReply.replied_by,
+                                upvotes: newReply.upvotes,
+                                created_at: newReply.created_at
+                              }] : []
+                            }
+                          });
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          }
+        );
+      }
+    );
   } catch (error) {
     console.error('Create forum post error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+// Helper function to generate category-specific answers
+function generateGenericAnswer(category, question) {
+  const answers = {
+    'Crop': `For crop-related queries, I recommend consulting with your local agriculture extension officer. Based on your region's climate and soil type, they can provide specific guidance. You can also use our crop disease detection feature for image-based analysis.`,
+
+    'Soil': `Soil health is crucial for good yields. I recommend getting a soil test done at your nearest soil testing laboratory. Based on the results, you can determine the right amendments needed. Regular addition of organic matter like FYM or compost helps improve soil structure and fertility.`,
+
+    'Weather': `For accurate weather forecasts, please check our Weather section which provides 7-day forecasts. During extreme weather events, ensure proper drainage in fields and protect standing crops with appropriate measures. Local agriculture department can provide region-specific advisories.`,
+
+    'Disease & Pests': `Early detection is key for pest and disease management. Try using our Crop Disease feature for image-based identification. For immediate action, consult with local plant protection experts. Always use recommended pesticides at proper dosages and follow safety guidelines.`,
+
+    'Market': `Market prices fluctuate based on demand, supply, and seasonal factors. Check daily rates on eNAM portal or local APMC markets. Avoid distress selling - store produce properly if prices are low. Consider joining Farmer Producer Organizations (FPOs) for better bargaining power.`,
+
+    'Fertilizers': `Fertilizer application should be based on soil test results. Over-application can harm soil health and crops. Follow recommended NPK ratios for your crop. Split application is better than single dose. Consider using bio-fertilizers and organic manures to reduce chemical dependence.`,
+
+    'General Queries': `For general agricultural queries and government schemes, visit your local agriculture department office or Krishi Vigyan Kendra (KVK). They provide free advisory services, training programs, and information about subsidies. You can also call the Kisan Call Centre at 1800-180-1551 for expert advice.`
+  };
+
+  return answers[category] || `Thank you for your question. Our agricultural experts will review this and provide detailed guidance. In the meantime, you can explore our other features like Crop Disease Detection, Market Prices, and Weather Forecast for immediate assistance.`;
+}
+
 
 // Create forum reply
 app.post('/api/forum/reply', requireAuth, async (req, res) => {
@@ -831,6 +1149,152 @@ app.post('/api/forum/reply', requireAuth, async (req, res) => {
     res.status(201).json({ id: result.id, message: 'Reply added successfully' });
   } catch (error) {
     console.error('Create forum reply error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Upvote forum post
+app.post('/api/forum/upvote', requireAuth, async (req, res) => {
+  try {
+    const { postId, action } = req.body;
+
+    if (!postId || !action) {
+      return res.status(400).json({ message: 'Post ID and action are required' });
+    }
+
+    let result;
+    if (action === 'increment') {
+      result = await dbHelpers.incrementPostUpvotes(postId);
+    } else if (action === 'decrement') {
+      result = await dbHelpers.decrementPostUpvotes(postId);
+    } else {
+      return res.status(400).json({ message: 'Invalid action. Use "increment" or "decrement"' });
+    }
+
+    res.json({ upvotes: result.upvotes });
+  } catch (error) {
+    console.error('Upvote forum post error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ========== INTELLIGENT FARMER FORUM ROUTES (New Q&A System) ==========
+
+const { extractKeywords } = require('./keywords');
+
+// Get all farmer forum posts
+app.get('/api/farmer-forum/posts', requireAuth, async (req, res) => {
+  try {
+    const posts = await dbHelpers.getFarmerForumPosts();
+    res.json(posts);
+  } catch (error) {
+    console.error('Get farmer forum posts error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Search farmer forum with keyword extraction and intelligent matching
+app.get('/api/farmer-forum/search', requireAuth, async (req, res) => {
+  try {
+    const { question, community } = req.query;
+
+    if (!question) {
+      return res.status(400).json({ message: 'Question is required' });
+    }
+
+    // Extract keywords from the question
+    const keywords = extractKeywords(question);
+    console.log(`Extracted keywords from "${question}": ${keywords}`);
+
+    // Search with keywords and community filter
+    const results = await dbHelpers.searchFarmerForumByKeywords(keywords, community);
+
+    if (!results || results.length === 0) {
+      return res.json({
+        found: false,
+        message: 'No community-specific result found. Please refine your question.',
+        extractedKeywords: keywords
+      });
+    }
+
+    res.json({
+      found: true,
+      results,
+      extractedKeywords: keywords
+    });
+  } catch (error) {
+    console.error('Search farmer forum error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Create new farmer forum question
+app.post('/api/farmer-forum/question', requireAuth, async (req, res) => {
+  try {
+    const userId = req.session.userId;
+    const { question, community } = req.body;
+
+    if (!question || !community) {
+      return res.status(400).json({ message: 'Question and community are required' });
+    }
+
+    // Extract keywords
+    const keywords = extractKeywords(question);
+
+    // Create the question
+    const result = await dbHelpers.createFarmerForumQuestion(question, keywords, community, userId);
+
+    res.status(201).json({
+      id: result.id,
+      message: 'Question posted successfully',
+      extractedKeywords: keywords
+    });
+  } catch (error) {
+    console.error('Create farmer forum question error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Toggle upvote on farmer forum post
+app.post('/api/farmer-forum/upvote', requireAuth, async (req, res) => {
+  try {
+    const { postId, action } = req.body;
+
+    if (!postId || !action) {
+      return res.status(400).json({ message: 'Post ID and action are required' });
+    }
+
+    let result;
+    if (action === 'increment') {
+      result = await dbHelpers.incrementForumUpvotes(postId);
+    } else if (action === 'decrement') {
+      result = await dbHelpers.decrementForumUpvotes(postId);
+    } else {
+      return res.status(400).json({ message: 'Invalid action. Use "increment" or "decrement"' });
+    }
+
+    res.json({ upvotes: result.upvotes });
+  } catch (error) {
+    console.error('Upvote farmer forum post error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Add reply to farmer forum post (increments reply count)
+app.post('/api/farmer-forum/reply', requireAuth, async (req, res) => {
+  try {
+    const { postId } = req.body;
+
+    if (!postId) {
+      return res.status(400).json({ message: 'Post ID is required' });
+    }
+
+    // Increment the reply count
+    await dbHelpers.incrementForumReplies(postId);
+
+    res.json({ message: 'Reply added successfully' });
+  } catch (error) {
+    console.error('Add farmer forum reply error:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
